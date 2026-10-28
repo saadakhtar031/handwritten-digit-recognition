@@ -1,6 +1,4 @@
-
 flask
 flask-cors
-tensorflow
 numpy
-gunicorn
+tflite-runtime
