@@ -1,59 +1,82 @@
 
+import os
+import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import numpy as np
-import tensorflow as tf
-import os
+from tflite_runtime.interpreter import Interpreter
 
 app = Flask(__name__)
-CORS(app)
 
-MODEL_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "handwritten_digit_model.keras"
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": [
+                "https://doodle-digit-oracle.lovable.app",
+                "https://doodle-digit-oracle.vercel.app"
+            ]
+        }
+    }
 )
 
-model = tf.keras.models.load_model(MODEL_PATH)
+MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "handwritten_digit_model.tflite"
+)
+
+interpreter = Interpreter(model_path=MODEL_PATH)
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({
-        "project": "Handwritten Digit Recognition",
-        "status": "API is running"
-    })
+    return "DigitMind AI TFLite API is running!"
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
-        data = request.get_json()
+        data = request.get_json(force=True)
         pixels = np.array(data["pixels"], dtype=np.float32)
 
         if pixels.shape != (28, 28):
             return jsonify({
-                "error": "Input must be a 28x28 image"
+                "error": "Expected a 28x28 pixel image"
             }), 400
 
-        # Accept pixel values from 0 to 255 or 0 to 1
         if pixels.max() > 1:
             pixels = pixels / 255.0
 
         image = pixels.reshape(1, 28, 28, 1)
+        expected_dtype = input_details[0]["dtype"]
+        image = image.astype(expected_dtype)
 
-        probabilities = model.predict(image, verbose=0)[0]
+        interpreter.set_tensor(
+            input_details[0]["index"], image
+        )
+        interpreter.invoke()
+
+        probabilities = interpreter.get_tensor(
+            output_details[0]["index"]
+        )[0]
+
         digit = int(np.argmax(probabilities))
+        confidence = float(probabilities[digit])
 
         return jsonify({
-            "prediction": digit,
-            "confidence": round(
-                float(probabilities[digit]) * 100, 2
-            )
+            "digit": digit,
+            "confidence": confidence,
+            "probabilities": probabilities.tolist()
         })
 
-    except Exception as error:
-        return jsonify({"error": str(error)}), 400
+    except Exception as e:
+        app.logger.exception("Prediction failed")
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000))
-    )
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
